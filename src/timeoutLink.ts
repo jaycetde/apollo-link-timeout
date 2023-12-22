@@ -1,8 +1,13 @@
-import { ApolloLink, Observable, Operation, NextLink } from '@apollo/client/core';
+import {
+  ApolloLink,
+  Observable,
+  Operation,
+  NextLink
+} from '@apollo/client/core';
 import { DefinitionNode } from 'graphql';
 import TimeoutError from './TimeoutError';
 
-const DEFAULT_TIMEOUT: number = 15000;
+const DEFAULT_TIMEOUT: number = Infinity;
 
 /**
  * Aborts the request if the timeout expires before the response is received.
@@ -18,21 +23,8 @@ export default class TimeoutLink extends ApolloLink {
   }
 
   public request(operation: Operation, forward: NextLink) {
-    let controller: AbortController;
-
     // override timeout from query context
     const requestTimeout = operation.getContext().timeout || this.timeout;
-
-    // add abort controller and signal object to fetchOptions if they don't already exist
-    if (typeof AbortController !== 'undefined') {
-      const context = operation.getContext();
-      let fetchOptions = context.fetchOptions || {};
-
-      controller = fetchOptions.controller || new AbortController();
-
-      fetchOptions = { ...fetchOptions, controller, signal: controller.signal };
-      operation.setContext({ fetchOptions });
-    }
 
     const chainObservable = forward(operation); // observable for remaining link chain
 
@@ -40,7 +32,11 @@ export default class TimeoutLink extends ApolloLink {
       (def: DefinitionNode) => def.kind === 'OperationDefinition'
     ).operation;
 
-    if (requestTimeout <= 0 || operationType === 'subscription') {
+    if (
+      requestTimeout <= 0 ||
+      !isFinite(requestTimeout) ||
+      operationType === 'subscription'
+    ) {
       return chainObservable; // skip this link if timeout is zero or it's a subscription request
     }
 
@@ -65,21 +61,9 @@ export default class TimeoutLink extends ApolloLink {
 
       // if timeout expires before observable completes, abort call, unsubscribe, and return error
       timer = setTimeout(() => {
-        if (controller) {
-          controller.abort(); // abort fetch operation
-
-          // if the AbortController in the operation context is one we created,
-          // it's now "used up", so we need to remove it to avoid blocking any
-          // future retry of the operation.
-          const context = operation.getContext();
-          let fetchOptions = context.fetchOptions || {};
-          if(fetchOptions.controller === controller && fetchOptions.signal === controller.signal) {
-             fetchOptions = { ...fetchOptions, controller: null, signal: null };
-             operation.setContext({ fetchOptions });
-          }
-        }
-
-        observer.error(new TimeoutError('Timeout exceeded', requestTimeout, this.statusCode));
+        observer.error(
+          new TimeoutError('Timeout exceeded', requestTimeout, this.statusCode)
+        );
         subscription.unsubscribe();
       }, requestTimeout);
 

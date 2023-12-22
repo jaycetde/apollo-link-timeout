@@ -7,21 +7,37 @@ const TEST_TIMEOUT = 100;
 const timeoutLink: TimeoutLink = new TimeoutLink(TEST_TIMEOUT);
 
 const query = gql`
-{
-  foo {
-    bar
+  {
+    foo {
+      bar
+    }
   }
-}`;
+`;
 
 let called, delay;
 
 const mockLink = new ApolloLink(operation => {
+  const context = operation.getContext();
+  const abortController: AbortController | undefined =
+    context.fetchOptions && context.fetchOptions.controller;
   called++;
   return new Observable(observer => {
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       observer.next({});
       observer.complete();
     }, delay);
+
+    if (abortController) {
+      const onAbort = () => {
+        clearTimeout(timer);
+        observer.error(new Error('Aborted'));
+        observer.complete();
+      };
+      abortController.signal.addEventListener('abort', onAbort);
+      if (abortController.signal.aborted) {
+        onAbort();
+      }
+    }
   });
 });
 
@@ -92,6 +108,27 @@ test('configured short value through context time out', done => {
       expect(error.message).toEqual('Timeout exceeded');
       expect(error.timeout).toEqual(configured);
       expect(error.statusCode).toEqual(408);
+      done();
+    }
+  });
+});
+
+test('aborted request does not timeout', done => {
+  delay = 200;
+  const configured = 100;
+
+  const controller = new AbortController();
+  const fetchOptions = { controller, signal: controller.signal };
+
+  controller.abort();
+
+  execute(link, {
+    query,
+    context: { fetchOptions, timeout: configured }
+  }).subscribe({
+    error(err) {
+      expect(called).toBe(1);
+      expect(err).toEqual(new Error('Aborted'));
       done();
     }
   });
